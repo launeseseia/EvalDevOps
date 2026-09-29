@@ -1,3 +1,6 @@
+import os
+import pytest
+
 from app import alert_threshold, sanitize_input, app
 
 
@@ -26,3 +29,9 @@ def test_status_endpoint():
     response = client.get("/status")
     assert response.status_code == 200
     assert response.get_json()["service"] == "eval-devops"
+
+
+@pytest.mark.skipif(not os.getenv("REDIS_HOST"), reason="pas de Redis disponible")
+def test_health_avec_vrai_redis():
+    response = app.test_client().get("/health")
+    assert response.status_code == 200

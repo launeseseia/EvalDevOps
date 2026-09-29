@@ -1,19 +1,11 @@
 name: "Setup Python + dependances"
-description: "Installe Python, restaure le cache pip et installe les dependances du projet"
+description: "Installe Python, restaure le cache pip et installe les dependances"
 
 inputs:
   python-version:
     description: "Version de Python a installer"
     required: false
     default: "3.12"
-  requirements:
-    description: "Fichier de dependances a installer"
-    required: false
-    default: "requirements.txt"
-  extra-packages:
-    description: "Paquets supplementaires (separes par des espaces)"
-    required: false
-    default: ""
 
 runs:
   using: composite
@@ -27,15 +19,8 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: pip-${{ hashFiles(inputs.requirements) }}
+        key: pip-${{ hashFiles('requirements.txt') }}
 
     - name: Install dependencies
       shell: bash
-      env:
-        REQUIREMENTS: ${{ inputs.requirements }}
-        EXTRA_PACKAGES: ${{ inputs.extra-packages }}
-      run: |
-        pip install -r "$REQUIREMENTS"
-        if [ -n "$EXTRA_PACKAGES" ]; then
-          pip install $EXTRA_PACKAGES
-        fi
+      run: pip install -r requirements.txt

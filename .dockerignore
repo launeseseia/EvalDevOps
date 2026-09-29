@@ -6,3 +6,5 @@ __pycache__/
 tests/
 *.md
 node_modules/
+prometheus/
+grafana/

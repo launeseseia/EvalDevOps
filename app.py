@@ -2,16 +2,26 @@ import os
 import time
 from flask import Flask, jsonify, request, Response
 import redis
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, Gauge
 
 
 app = Flask(__name__)
+
+COMMIT_SHA = os.environ.get("COMMIT_SHA", "unknown")
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
+APP_BUILD_INFO = Gauge(
+      "app_build_info",
+      "Version et commit actuellement deployes",
+      ["version", "commit_sha"],
+  )
+APP_BUILD_INFO.labels(version=APP_VERSION, commit_sha=COMMIT_SHA).set(1)
 
 
 REQUEST_COUNT = Counter(
     "http_requests_total",
     "Nombre total de requetes HTTP recues",
-    ["method", "endpoint", "status"],
+    ["method", "endpoint", "code"],
 )
 
 
@@ -43,7 +53,7 @@ def record_metrics(response):
     duration = time.perf_counter() - getattr(request, "_metrics_start", time.perf_counter())
     status = response.status_code
 
-    REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, status=status).inc()
+    REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, code=status).inc()
     REQUEST_DURATION.labels(method=request.method, endpoint=endpoint).observe(duration)
 
     return response
@@ -63,9 +73,6 @@ def simulate_error():
         status="error",
         message="Erreur 500 simulee pour declenchement d'alerte"
     ), 500
-
-
-COMMIT_SHA = os.environ.get("COMMIT_SHA", "unknown")
 
 
 def sanitize_input(value):
@@ -95,7 +102,7 @@ def status():
     return jsonify({
         "status": "ok",
         "service": "eval-devops",
-        "version": "1.0",
+        "version": APP_VERSION,
         "commit_sha": COMMIT_SHA,
     }), 200
 
@@ -105,6 +112,12 @@ def visits():
     client = get_redis_client()
     count = client.incr("visits_counter")
     return jsonify(visits=count), 200
+
+
+@app.route("/simulate-latency")
+def simulate_latency():
+    time.sleep(1)
+    return jsonify(status="ok", message="Reponse volontairement lente (1 s)"), 200
 
 
 if __name__ == "__main__":

@@ -6,34 +6,46 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   Lint:
+    name: Lint Python
     runs-on: ubuntu-latest
-    timeout-minutes: 10    
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Python + dependances
+        uses: ./.github/actions/setup-python-deps
         with:
-          python-version: '3.10'
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+          python-version: "3.10"
 
       - name: Run linter (flake8)
         run: flake8 . --max-line-length=100 --exclude=.venv
 
+  Yamllint:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python + yamllint
+        uses: ./.github/actions/setup-python-deps
+        with:
+          python-version: "3.12"
+          extra-packages: "yamllint==1.35.1"
+
+      - name: Run yamllint
+        run: yamllint -f github .
+
   Test:
     runs-on: ubuntu-latest
-    needs: lint
+    needs: Lint
     timeout-minutes: 10
     strategy:
       matrix:
@@ -52,19 +64,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Setup Python + dependances
+        uses: ./.github/actions/setup-python-deps
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
 
       - name: Run tests (pytest)
         run: pytest -v --cov=. --cov-report=html:rapport.html
@@ -76,48 +79,78 @@ jobs:
           name: rapport-tests-${{ matrix.python-version }}
           path: rapport.html
 
-  # build-and-push:
-  #     runs-on: ubuntu-latest
-  #     needs: test
-        # timeout-minutes: 10
-  #     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  #     permissions:
-  #       contents: read
-  #       packages: write
+  Build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: Lint
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  #     steps:
-  #       - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-  #       - uses: docker/login-action@v3
-  #         with:
-  #           registry: ghcr.io
-  #           username: ${{ github.actor }}
-  #           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-${{ hashFiles('Dockerfile', 'requirements.txt') }}
 
-  #       - uses: docker/build-push-action@v5
-  #         with:
-  #           context: .
-  #           push: true
-  #           tags: |
-  #             ghcr.io/${{ github.repository }}:${{ github.sha }}
-  #             ghcr.io/${{ github.repository }}:latest
-  
-  # deploy:
-  #     name: Deploy to Production
-  #     needs: build-and-push
-  #     runs-on: ubuntu-latest
-  #     environment: production
-  #     steps:
-  #       - name: Checkout code
-  #         uses: actions/checkout@v4
+      - name: Build image (sans push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: eval-devops:ci
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
-  #       - name: Run deployment script
-  #         run: |
-  #           chmod +x deploy/deploy.sh
-  #           ./deploy/deploy.sh
-  #         env:
-  #           COMPOSE_FILE: docker-compose.yml
-  #           COMMIT_SHA: ${{ github.sha }}
-  #       - name: Smoke test production traffic
-  #         run: |
-  #           curl --fail http://localhost/status || exit 1
+      - name: Rotate Docker cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Smoke test (conteneur + Redis)
+        run: |
+          docker network create ci-net
+          docker run -d --name redis --network ci-net redis:7-alpine
+          docker run -d --name app --network ci-net -p 5000:5000 eval-devops:ci
+          for i in $(seq 1 12); do
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' app)
+            echo "Tentative $i : $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              curl -fsS http://localhost:5000/status
+              echo "Utilisateur dans le conteneur : $(docker exec app whoami)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Le conteneur n'est jamais devenu healthy"
+          docker logs app
+          exit 1
+
+  Ci-ok:
+    name: Ci-ok
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [Lint, Yamllint, Test, Build]
+    if: always()
+    steps:
+      - name: Verification des jobs precedents
+        run: |
+          echo "Lint     : ${{ needs.lint.result }}"
+          echo "Yamllint : ${{ needs.yamllint.result }}"
+          echo "Test     : ${{ needs.test.result }}"
+          echo "Build    : ${{ needs.build.result }}"
+          if [ "${{ needs.lint.result }}" != "success" ] || \
+             [ "${{ needs.yamllint.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ]; then
+            echo "::error::Un ou plusieurs jobs requis ont echoue."
+            exit 1
+          fi
+          echo "Tous les jobs amont ont reussi."

@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # image precise en slim pour reduire la taille de l'image 
 FROM python:3.12-slim
 
+ARG COMMIT_SHA=unknown
+ENV COMMIT_SHA=${COMMIT_SHA}
+
 WORKDIR /app
 # ajout d'un user non root 
 RUN useradd --create-home appuser
